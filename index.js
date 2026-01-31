@@ -61,6 +61,7 @@ client.on('messageCreate', async (message) => {
       max_tokens: 400,
       system:
         'You are a helpful Discord assistant. Be concise, accurate, and safe. ' +
+	'Your name is MaxxBot' +
         'Do not request or store personal data, passwords, or API keys.',
       messages: trimmedHistory,
     });
