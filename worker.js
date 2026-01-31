@@ -1,18 +1,21 @@
 import 'dotenv/config';
 import Anthropic from '@anthropic-ai/sdk';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// REQUIRED: set in Railway Variables for the worker service
+// ===================== CONFIG =====================
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-// Tune these
 const INTERVAL_MINUTES = Number(process.env.WORKER_INTERVAL_MINUTES || 30);
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-haiku-20240307';
+const MODEL = 'claude-3-haiku-20240307';
 
+if (!ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+if (!DISCORD_WEBHOOK_URL) throw new Error('Missing DISCORD_WEBHOOK_URL');
+
+// ===================== CLIENT =====================
+const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+
+// ===================== DISCORD =====================
 async function postToDiscord(content) {
-  if (!DISCORD_WEBHOOK_URL) throw new Error('Missing DISCORD_WEBHOOK_URL');
-
   const res = await fetch(DISCORD_WEBHOOK_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -23,72 +26,82 @@ async function postToDiscord(content) {
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Discord webhook failed: ${res.status} ${text}`);
+    const txt = await res.text().catch(() => '');
+    throw new Error(`Discord webhook failed ${res.status}: ${txt}`);
   }
 }
 
-// Replace this with real ingestion later (Moltbook feed, RSS, filings, etc.)
-async function getSignals() {
-  // Keep it structured and auditable.
-  return {
-    date: new Date().toISOString(),
-    notes: [
-      'Placeholder: integrate Moltbook feed next',
-      'Placeholder: integrate news/RSS next',
-    ],
-    tickersMentioned: ['NVDA', 'MSFT', 'AMZN'],
-  };
+// ===================== INPUT (STUB) =====================
+// This replaces Moltbook for now
+async function getResearchInput() {
+  return `
+Agents are discussing current market themes:
+
+- Debate over AI infrastructure spending sustainability
+- Mixed views on NVDA valuation versus earnings growth
+- Concerns about rate sensitivity impacting growth equities
+- Divergence between mega-cap tech and small-cap recovery
+- Caution around speculative AI-adjacent companies
+
+Use this as raw discussion input.
+`;
 }
 
-async function buildDigest(signals) {
+// ===================== DIGEST =====================
+async function buildDigest(rawText) {
   const prompt = `
-Create a short "Research Digest" for a Discord channel.
+You are a neutral research synthesis agent.
 
 Rules:
-- Give only financial advice that you are absolutely certain is correct.
-- Focus on smallcap and midcap stocks with high growth potential and acceptable trading volume
-- Do not include any stocks in the S&P 500
-- Say "buy" or "sell" or "hold"
-- Output: watchlist + bullet reasons + what to verify next.
-- Keep under 1800 characters.
+- Do NOT give financial advice
+- Do NOT say buy or sell
+- Focus on themes, disagreement, and uncertainty
+- Be concise and analytical
 
-Signals JSON:
-${JSON.stringify(signals, null, 2)}
+Discussion input:
+${rawText}
+
+Output format:
+- 4 bullet summary
+- 3 "threads to watch"
+- 2 risks or open questions
 `.trim();
 
   const resp = await anthropic.messages.create({
     model: MODEL,
-    max_tokens: 450,
-    system:
-      'You are a research assistant. Be concise, skeptical, and explicit about uncertainty. Excellent financial advice.',
+    max_tokens: 500,
+    system: 'You produce neutral market research digests.',
     messages: [{ role: 'user', content: prompt }],
   });
 
   const text = (resp.content || [])
-    .filter((c) => c.type === 'text')
-    .map((c) => c.text)
+    .filter(c => c.type === 'text')
+    .map(c => c.text)
     .join('\n')
     .trim();
 
   return text || 'No digest generated.';
 }
 
+// ===================== MAIN LOOP =====================
 async function runOnce() {
   console.log(`[worker] tick ${new Date().toISOString()}`);
-  const signals = await getSignals();
-  const digest = await buildDigest(signals);
-  await postToDiscord(`🧠 Research Digest\n${digest}`);
+
+  const rawText = await getResearchInput();
+  const digest = await buildDigest(rawText);
+
+  await postToDiscord(`🧠 **Research Digest**\n\n${digest}`);
+
   console.log('[worker] posted digest');
 }
 
-function startLoop() {
-  runOnce().catch((e) => console.error('[worker] error:', e));
+function start() {
+  runOnce().catch(e => console.error('[worker] error:', e));
 
   const ms = INTERVAL_MINUTES * 60 * 1000;
   setInterval(() => {
-    runOnce().catch((e) => console.error('[worker] error:', e));
+    runOnce().catch(e => console.error('[worker] error:', e));
   }, ms);
 }
 
-startLoop();
+start();
