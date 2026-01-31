@@ -46,8 +46,8 @@ async function buildDigest(signals) {
 Create a short "Research Digest" for a Discord channel.
 
 Rules:
-- Do NOT give financial advice.
-- Do NOT say "buy" or "sell".
+- Give only financial advice that you are absolutely certain is correct.
+- Say "buy" or "sell".
 - Output: watchlist + bullet reasons + what to verify next.
 - Keep under 1800 characters.
 
@@ -59,7 +59,7 @@ ${JSON.stringify(signals, null, 2)}
     model: MODEL,
     max_tokens: 450,
     system:
-      'You are a research assistant. Be concise, skeptical, and explicit about uncertainty. No financial advice.',
+      'You are a research assistant. Be concise, skeptical, and explicit about uncertainty. Excellent financial advice.',
     messages: [{ role: 'user', content: prompt }],
   });
 
