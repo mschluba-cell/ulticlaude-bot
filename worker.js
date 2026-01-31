@@ -47,7 +47,8 @@ Create a short "Research Digest" for a Discord channel.
 
 Rules:
 - Give only financial advice that you are absolutely certain is correct.
-- Focus on small and mid-cap stocks with high growth potential and acceptable trading volume
+- Focus on smallcap and midcap stocks with high growth potential and acceptable trading volume
+- Do not include any stocks in the S&P 500
 - Say "buy" or "sell" or "hold"
 - Output: watchlist + bullet reasons + what to verify next.
 - Keep under 1800 characters.
