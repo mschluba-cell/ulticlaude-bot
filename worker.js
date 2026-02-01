@@ -1,28 +1,39 @@
 import 'dotenv/config';
-import Anthropic from '@anthropic-ai/sdk';
+import cron from 'node-cron';
+import Parser from 'rss-parser';
 
 // ===================== CONFIG =====================
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+const TZ = 'America/New_York'; // 9am EST/EDT automatically
+const CRON_SCHEDULE = '0 9 * * *'; // minute hour day month day-of-week -> 09:00 daily
 
-const INTERVAL_MINUTES = Number(process.env.WORKER_INTERVAL_MINUTES || 30);
-const MODEL = 'claude-3-haiku-20240307';
-
-if (!ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
 if (!DISCORD_WEBHOOK_URL) throw new Error('Missing DISCORD_WEBHOOK_URL');
 
-// ===================== CLIENT =====================
-const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+// ===================== RSS SOURCES =====================
+// Google News World (global news). RSS is stable and easy.
+// You can add more sources later if you want diversity.
+const RSS_URLS = [
+  'https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en',
+];
+
+const parser = new Parser({
+  timeout: 15000,
+  customFields: {
+    item: ['source'], // sometimes present
+  },
+});
 
 // ===================== DISCORD =====================
 async function postToDiscord(content) {
+  const body = JSON.stringify({
+    content: content.length > 1900 ? content.slice(0, 1900) : content,
+    allowed_mentions: { parse: [] },
+  });
+
   const res = await fetch(DISCORD_WEBHOOK_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      content: content.length > 1900 ? content.slice(0, 1900) : content,
-      allowed_mentions: { parse: [] },
-    }),
+    body,
   });
 
   if (!res.ok) {
@@ -31,77 +42,102 @@ async function postToDiscord(content) {
   }
 }
 
-// ===================== INPUT (STUB) =====================
-// This replaces Moltbook for now
-async function getResearchInput() {
-  return `
-Agents are discussing current market themes:
-
-- Debate over AI infrastructure spending sustainability
-- Mixed views on NVDA valuation versus earnings growth
-- Concerns about rate sensitivity impacting growth equities
-- Divergence between mega-cap tech and small-cap recovery
-- Caution around speculative AI-adjacent companies
-
-Use this as raw discussion input.
-`;
+// ===================== NEWS =====================
+function clean(str) {
+  return (str || '').replace(/\s+/g, ' ').trim();
 }
 
-// ===================== DIGEST =====================
-async function buildDigest(rawText) {
-  const prompt = `
-You are a neutral research synthesis agent.
+function formatDate(d) {
+  try {
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return '';
+    return dt.toLocaleString('en-US', { timeZone: TZ });
+  } catch {
+    return '';
+  }
+}
 
-Rules:
-- Do NOT give financial advice
-- Do NOT say buy or sell
-- Focus on themes, disagreement, and uncertainty
-- Be concise and analytical
+async function fetchTopStories(limit = 10) {
+  const allItems = [];
 
-Discussion input:
-${rawText}
+  for (const url of RSS_URLS) {
+    const feed = await parser.parseURL(url);
+    const items = Array.isArray(feed.items) ? feed.items : [];
+    for (const it of items) {
+      allItems.push({
+        title: clean(it.title),
+        link: clean(it.link),
+        pubDate: it.isoDate || it.pubDate || '',
+      });
+    }
+  }
 
-Output format:
-- 4 bullet summary
-- 3 "threads to watch"
-- 2 risks or open questions
-`.trim();
+  // Deduplicate by link/title, then sort newest-first
+  const seen = new Set();
+  const deduped = [];
+  for (const it of allItems) {
+    const key = `${it.link}::${it.title}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!it.title || !it.link) continue;
+    deduped.push(it);
+  }
 
-  const resp = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 500,
-    system: 'You produce neutral market research digests.',
-    messages: [{ role: 'user', content: prompt }],
+  deduped.sort((a, b) => {
+    const ta = new Date(a.pubDate).getTime() || 0;
+    const tb = new Date(b.pubDate).getTime() || 0;
+    return tb - ta;
   });
 
-  const text = (resp.content || [])
-    .filter(c => c.type === 'text')
-    .map(c => c.text)
-    .join('\n')
-    .trim();
-
-  return text || 'No digest generated.';
+  return deduped.slice(0, limit);
 }
 
-// ===================== MAIN LOOP =====================
-async function runOnce() {
-  console.log(`[worker] tick ${new Date().toISOString()}`);
+function buildMessage(stories) {
+  const today = new Date().toLocaleDateString('en-US', { timeZone: TZ });
+  const header = `🗞️ Global News Top 10 — ${today} (9:00 AM ET)`;
 
-  const rawText = await getResearchInput();
-  const digest = await buildDigest(rawText);
+  const lines = stories.map((s, i) => {
+    const when = formatDate(s.pubDate);
+    const timePart = when ? ` (${when})` : '';
+    return `${i + 1}. ${s.title}${timePart}\n${s.link}`;
+  });
 
-  await postToDiscord(`🧠 **Research Digest**\n\n${digest}`);
-
-  console.log('[worker] posted digest');
+  // Keep under Discord limit
+  let msg = `${header}\n\n${lines.join('\n\n')}`;
+  if (msg.length > 1900) msg = msg.slice(0, 1900);
+  return msg;
 }
 
-function start() {
-  runOnce().catch(e => console.error('[worker] error:', e));
+// ===================== JOB =====================
+async function runJob() {
+  console.log(`[worker] job start ${new Date().toISOString()}`);
 
-  const ms = INTERVAL_MINUTES * 60 * 1000;
-  setInterval(() => {
-    runOnce().catch(e => console.error('[worker] error:', e));
-  }, ms);
+  const stories = await fetchTopStories(10);
+  if (!stories.length) {
+    await postToDiscord('🗞️ Global News Top 10: No stories found (feed empty).');
+    console.log('[worker] posted empty notice');
+    return;
+  }
+
+  const message = buildMessage(stories);
+  await postToDiscord(message);
+
+  console.log('[worker] posted top 10 stories');
 }
 
-start();
+// ===================== STARTUP =====================
+// Schedule daily at 9:00 AM Eastern
+cron.schedule(
+  CRON_SCHEDULE,
+  () => {
+    runJob().catch((e) => console.error('[worker] job error:', e));
+  },
+  { timezone: TZ }
+);
+
+console.log(`[worker] scheduled daily job at 09:00 ET (${TZ}).`);
+
+// Optional: run once on boot for testing (set RUN_ON_BOOT=true)
+if ((process.env.RUN_ON_BOOT || '').toLowerCase() === 'true') {
+  runJob().catch((e) => console.error('[worker] boot run error:', e));
+}

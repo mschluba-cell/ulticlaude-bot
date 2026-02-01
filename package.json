@@ -4,11 +4,14 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "worker": "node worker.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "discord.js": "^14.17.3",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "node-cron": "^4.2.1",
+    "rss-parser": "^3.13.0"
   }
 }
